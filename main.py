@@ -353,7 +353,7 @@ def get_items_from_str(s) -> dict:
         amount = parse_num(itemsplit[-1])
         item_name = " x".join(itemsplit[:-1]).strip()
         if type(amount) not in [int, float]:
-            item_dict[item_name + "x " + amount] = 1
+            item_dict[item_name + " x" + amount] = 1
             continue
 
         item_dict[item_name] = amount
@@ -473,7 +473,7 @@ def display_recipe_tree(item, scale, step=0):
     
     indent = " " * 4 
     # base item or unkown recipe
-    if len(available_recipes) == 0 or item in base_items:
+    if len(available_recipes) == 0 or item in base_items or scale == 0:
         # add item to raw cost
         if item in raw_cost:
             raw_cost[f"{item}"] += scale

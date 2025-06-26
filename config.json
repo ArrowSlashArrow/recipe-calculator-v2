@@ -1,7 +1,7 @@
 {
     "Time unit": "seconds",
-    "Item display convention": "# items",
+    "Item display convention": "item x#",
     "Formatted large numbers": true,
     "Formatted times": true,
-    "current_db": "recipes\\recipes.json"
+    "current_db": "recipes\\supersymmetry.json"
 }
