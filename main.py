@@ -1,4 +1,4 @@
-import os, sys, subprocess, json
+import os, sys, subprocess, json, shutil, requests, math
 
 def restart():
     print("Restarting script...")
@@ -39,7 +39,7 @@ trues = ["yes", "ye", "yeah", "yea", "y", "1", "true"]
 recipes_file = "recipes.json"
 base_items = []
 recipes = []
-hidden_configs = ["current_db"]
+hidden_configs = ["current_db"]  # hidden to prevent user error
 timescale = "seconds"
 
 # recipe stuff
@@ -57,11 +57,18 @@ default_recipes_file = """\
 
 default_cfgfile = """\
 {
-    "Time unit": "tick",
-    "Item display convention": "item x#"
+    "Time unit": "ticks",
+    "Item display convention": "item x#",
+    "Formatted large numbers": true,
+    "Formatted times": true,
+    "Show ticks": true,
+    "Check for recursion": true,
+    "current_db": "recipes\\recipes.json"
 }
 """
 
+# gets an input from a list of valid inputs, with the option of accessing them by their indices
+# loops until it returns a valid input
 def get_valid_input(msg, inputs: list, indices=False, exceptions=[]):
     while True:
         inp = input(msg).strip()
@@ -144,7 +151,7 @@ def process_str(process, time):
         return output_str
     
     output_str += " for "
-    if config["Formatted times"]:
+    if config.get("Formatted times", True):
         output_str += f"{true_time_str(time, timescale)}"
     else:
         output_str += f"{time} {timescale}"
@@ -269,8 +276,8 @@ def items_str(items: dict, ignore_config=False):
             strs.append(f"{item} x{count}")
             continue
 
-        convention = config["Item display convention"]
-        formatting = config["Formatted large numbers"]
+        convention = config.get("Item display convention", "item x#")
+        formatting = config.get("Formatted large numbers", True)
         count_str = f"{count:,}" if formatting else f"{count}"
         
         strs.append(
@@ -442,15 +449,38 @@ def edit_recipes():
             index -= 1
         index += 1
 
-def change_timescale(old, new):
+def change_timescale(old, new, **args):
     global timescale
-    convert_recipes(recipes, old, new)
+    convert_recipes(recipes, old=old, new=new)
     timescale = new
 
 def blank_recipe():
     return { "inputs" : {}, "process": "", "time": 0, "outputs" : {}, "byproducts" : {} }
 
-def display_recipe_tree(item, scale, step=0):
+# detect if there have been recursive recipes
+# returns true if it thinks there is recursion
+def detect_recursion(recipes_list):
+    r = recipes_list[::-1]
+    lengths = {}
+    # for lengths from 0 to the length of the list
+    for i in range(len(r)):
+        repeating = 0
+        index = 0
+        while True:
+            # calculate how many consecutive segments of length i there are
+            if r[index:index + i + 1] == r[:i + 1]:
+                repeating += 1
+                index += i + 1
+            else:
+                break
+        # record how many repeating i-length segments there are in order
+        lengths[i + 1] = repeating
+    
+    repeating_lengths = [k * v for k, v in lengths.items() if v > 1]
+    
+    return any([v > 4 for v in repeating_lengths])
+
+def display_recipe_tree(item, scale, step=0, past_recipes=[]):
     global raw_cost, leftovers, time_cost
     if step == 0:
         raw_cost = {}
@@ -472,8 +502,9 @@ def display_recipe_tree(item, scale, step=0):
         return f"{item} has no known recipe."
     
     indent = " " * 4 
+    recursive = detect_recursion(past_recipes) and config.get("Check for recursion", True)
     # base item or unkown recipe
-    if len(available_recipes) == 0 or item in base_items or scale == 0:
+    if len(available_recipes) == 0 or item in base_items or scale == 0 or recursive:
         # add item to raw cost
         if item in raw_cost:
             raw_cost[f"{item}"] += scale
@@ -504,21 +535,21 @@ def display_recipe_tree(item, scale, step=0):
     procstr = f'{process_str(machine, recipe['time'])}{f" each / {process_str(machine, time).split("for ")[1]} total" if many else ""}'
     byproduct_str = f' (+ byproducts: {items_str(byproducts)}' if byproducts != {} else ""
     output_str = f'{(indent * step)}{items_str({f"{item}": scale})} {byproduct_str}: {procstr}\n'
-    req_scale = recipe["outputs"][item]
+    req_scale = math.ceil(scale / recipe["outputs"][item])
 
     for req, req_amount in recipe["inputs"].items():
-        output_str += display_recipe_tree(req, req_amount * scale * req_scale, step=step + 1)
+        output_str += display_recipe_tree(req, req_amount * req_scale, step=step + 1)
 
-    # calculate leftovers
+    # calculate leftovers from this recipe
     temp_leftovers = {}
     for byproduct, amount in recipe["byproducts"].items():
-        temp_leftovers[byproduct] = amount * scale * req_scale
+        temp_leftovers[byproduct] = amount * req_scale
     for output, amount in recipe["outputs"].items():
-        temp_leftovers[output] = amount * scale * req_scale
+        temp_leftovers[output] = amount * req_scale
 
     # TODO: determine if leftovers can be used to make an item
 
-    temp_leftovers[item] -= scale * req_scale
+    temp_leftovers[item] -= scale
     # add them to master leftover dict
     for leftover, amount in temp_leftovers.items():
         if leftover not in leftovers:
@@ -571,21 +602,21 @@ def display_recipe_tree(item, scale, step=0):
     
 def true_time_str(time, timescale):
     true_time = time * SCALE[timescale]
-    hours = true_time // 3600
+    hours = round(true_time // 3600)
     true_time -= hours * 3600
-    minutes = true_time // 60
+    minutes = round(true_time // 60) if timescale != "minutes" else round(true_time / 60, 3)
     true_time -= minutes * 60
-    seconds = true_time // 1
-    ticks = (true_time % 1) * 20
+    seconds = round(true_time // 1) if timescale == "ticks" else round(true_time, 3)
+    ticks = round((true_time % 1) * 20)
 
     output_str = ""
     if hours:
         output_str += f"{hours}h "
     if minutes or hours:
         output_str += f"{minutes}m "
-    if seconds or not (minutes or hours):
+    if seconds or not (minutes or hours) and timescale != "minutes":
         output_str += f"{seconds}s "
-    if ticks and timescale == "ticks":
+    if ticks and timescale == "ticks" and config.get("Show ticks", True):
         output_str += f"{ticks}t "
 
     return output_str[:-1]
@@ -638,7 +669,7 @@ def convert_to_bool(**kwargs):
     config[kwargs["value"]] = kwargs["new"] in trues
 
 def import_recipes():
-    file = input("> Enter path of recipes file to import: ")
+    file = input("> Enter path of recipes file to import: ").strip("\"")
     if file == "back":
         return
     
@@ -681,6 +712,35 @@ def switch_file(file = ""):
     recipes_file = file
     parse_recipes()
 
+def update_script():
+    with console.status("Updating script...", spinner="dots12"):
+        file = "main.py"
+        # make backup
+        if file in os.listdir():
+            shutil.copyfile(file, f'{file}.bak')
+        else:
+            open(f"{file}.bak", "w").close()
+        req = requests.get(f"https://raw.githubusercontent.com/ArrowSlashArrow/recipe-calculator-v2/refs/heads/main/main.py")
+        # get file
+        if req.status_code == 404:
+            console.print(f"[red]Could not download {file} because it was not found in the repo.[/]")
+            os.remove(f'{file}.bak')
+        elif req.status_code != 200:
+            console.print(f"[red]Could not download {file} ({req.status_code}).[/]")
+            os.remove(f'{file}.bak')
+        else:
+            console.print(f"[green]Successfully downloaded {file}... [/]", end="")
+            # write to file
+            try:
+                open(file, "wb").write(req.text.encode("utf-8"))
+                console.print(f"[green]Successfully updated {file} :)[/]")
+            except Exception as e:
+                console.print(f"[red]Could not write to {file} because {e}[/]\n[yellow]Reverting to old copy of {file}...[/]")
+                shutil.copyfile(f'{file}.bak', file)
+            finally:
+                os.remove(f'{file}.bak')
+
+
 actions = {
     "Calculate recipe": calculate_recipe,
     "Import recipes": import_recipes,
@@ -689,7 +749,8 @@ actions = {
     "Edit base items": edit_base,
     "Merge recipes": merge_recipes,
     "Switch recipes file": switch_file,
-    "Edit config": edit_config,
+    "Update the script": update_script,
+    "Settings": edit_config,
     "Exit": quit,
 }
 
@@ -713,7 +774,7 @@ def main():
 def parse_config():
     global config, recipes_file
     config = json.load(open(config_file, "r"))
-    recipes_file = config["current_db"]
+    recipes_file = config.get("current_db", "recipes.json")
     print("Loaded config")
 
 def save_config():
@@ -779,13 +840,13 @@ def parse_recipes():
     global timescale, base_items, recipes
     try:
         timescale, base_items, recipes = load_recipes_from_file(recipes_file)
-        if timescale != config["Time unit"]:
-            convert_recipes(recipes, timescale, config["Time unit"])
-            timescale = config["Time unit"]
-
         print(f"Loaded {len(recipes)} recipes from {recipes_file}")
     except:
         print(f"Could not load recipes from {recipes_file}")
+    
+    if timescale != config.get("Time unit", "seconds"):
+        convert_recipes(recipes, old=timescale, new=config.get("Time unit", "seconds"))
+        timescale = config.get("Time unit", "seconds")
 
 def sort_recipes():
     global recipes
@@ -813,7 +874,7 @@ def preload():
         open(config_file, "w").write(default_cfgfile)
     parse_config()
 
-    if recipes_file not in os.listdir("recipes"):
+    if os.path.basename(recipes_file) not in os.listdir("recipes"):
         open(recipes_file, "w").write(default_recipes_file)
     parse_recipes()
 

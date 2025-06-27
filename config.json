@@ -3,5 +3,6 @@
     "Item display convention": "item x#",
     "Formatted large numbers": true,
     "Formatted times": true,
+    "Check for recursion": true,
     "current_db": "recipes\\supersymmetry.json"
 }
